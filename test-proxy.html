@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+<title>בדיקת חיבור לפרוקסי</title>
+<style>
+body{font-family:Arial;padding:20px;background:#f5f5f5;}
+button{padding:14px 24px;font-size:16px;background:#3B6E5C;color:#fff;border:none;border-radius:8px;cursor:pointer;}
+pre{background:#fff;border:1px solid #ccc;border-radius:8px;padding:14px;white-space:pre-wrap;word-break:break-all;font-size:13px;margin-top:16px;}
+</style>
+</head>
+<body>
+<h2>בדיקת חיבור לפרוקסי</h2>
+<p>לוחצים על הכפתור, ומחכים כמה שניות. התוצאה המלאה (כולל שגיאות) תופיע למטה.</p>
+<button id="btn">בדוק חיבור</button>
+<pre id="out">(עדיין לא נבדק)</pre>
+
+<script>
+const PROXY_URL = "https://withered-pine-d505.rotemshamir28.workers.dev";
+document.getElementById('btn').addEventListener('click', async ()=>{
+  const out = document.getElementById('out');
+  out.textContent = 'שולח בקשה ל-' + PROXY_URL + ' ...';
+  try{
+    const res = await fetch(PROXY_URL, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({model:'claude-sonnet-5', max_tokens:20, messages:[{role:'user', content:'say the word OK'}]})
+    });
+    out.textContent = 'קיבלנו תשובה! סטטוס: ' + res.status + '\n\n';
+    const text = await res.text();
+    out.textContent += text;
+  }catch(err){
+    out.textContent = 'השגיאה המלאה שהתקבלה:\n\n';
+    out.textContent += 'שם השגיאה: ' + err.name + '\n';
+    out.textContent += 'הודעה: ' + err.message + '\n';
+    out.textContent += 'המחרוזת המלאה: ' + String(err) + '\n';
+    out.textContent += '\nבדיקה נוספת: פתח כלי מפתחים (F12) ולשונית Console, נסה שוב, וצלם מסך של מה שמופיע שם באדום.';
+  }
+});
+</script>
+</body>
+</html>
