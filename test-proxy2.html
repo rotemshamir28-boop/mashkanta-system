@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+<title>בדיקת חיבור עם תמונה</title>
+<style>
+body{font-family:Arial;padding:20px;background:#f5f5f5;}
+button{padding:14px 24px;font-size:16px;background:#3B6E5C;color:#fff;border:none;border-radius:8px;cursor:pointer;margin-left:8px;}
+pre{background:#fff;border:1px solid #ccc;border-radius:8px;padding:14px;white-space:pre-wrap;word-break:break-all;font-size:13px;margin-top:16px;}
+canvas{display:none;}
+</style>
+</head>
+<body>
+<h2>בדיקת חיבור עם תמונה</h2>
+<p>הכפתור הראשון בונה תמונה קטנה מלאכותית ושולח אותה לבדיקה. הכפתור השני נותן לך להעלות תמונה אמיתית מהמכשיר.</p>
+<button id="btnSynthetic">בדוק עם תמונה מלאכותית</button>
+<button id="btnUpload">בחר תמונה אמיתית לבדיקה</button>
+<input type="file" id="fileInput" accept="image/*" style="display:none">
+<canvas id="canvas" width="100" height="100"></canvas>
+<pre id="out">(עדיין לא נבדק)</pre>
+
+<script>
+const PROXY_URL = "https://withered-pine-d505.rotemshamir28.workers.dev";
+const out = document.getElementById('out');
+
+async function sendImage(base64, mime, label){
+  out.textContent = 'שולח '+label+' (גודל base64: '+base64.length.toLocaleString()+' תווים) ...';
+  try{
+    const res = await fetch(PROXY_URL, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        model:'claude-sonnet-5', max_tokens:100,
+        messages:[{role:'user', content:[
+          {type:'image', source:{type:'base64', media_type:mime, data:base64}},
+          {type:'text', text:'מה צבע התמונה הזו? ענה במילה אחת.'}
+        ]}]
+      })
+    });
+    out.textContent = 'קיבלנו תשובה! סטטוס: ' + res.status + '\n\n';
+    out.textContent += await res.text();
+  }catch(err){
+    out.textContent = 'השגיאה המלאה:\n\n';
+    out.textContent += 'שם: ' + err.name + '\n';
+    out.textContent += 'הודעה: ' + err.message + '\n';
+    out.textContent += 'מחרוזת מלאה: ' + String(err);
+  }
+}
+
+document.getElementById('btnSynthetic').addEventListener('click', ()=>{
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = 'red'; ctx.fillRect(0,0,100,100);
+  const dataUrl = canvas.toDataURL('image/png');
+  sendImage(dataUrl.split(',')[1], 'image/png', 'תמונה מלאכותית (100x100 אדום)');
+});
+
+document.getElementById('btnUpload').addEventListener('click', ()=> document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  out.textContent = 'קורא קובץ בגודל ' + (file.size/1024).toFixed(0) + ' KB ...';
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    const dataUrl = reader.result;
+    sendImage(dataUrl.split(',')[1], file.type||'image/jpeg', 'תמונה שהעלית ('+(file.size/1024).toFixed(0)+' KB לפני קידוד)');
+  };
+  reader.onerror = ()=>{ out.textContent = 'שגיאה בקריאת הקובץ'; };
+  reader.readAsDataURL(file);
+});
+</script>
+</body>
+</html>
