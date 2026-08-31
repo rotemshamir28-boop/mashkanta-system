@@ -133,9 +133,9 @@ p{color:#111111;}
       <h2>יש לך דוח יתרות?</h2>
       <p class="small-note" style="margin-bottom:14px;">חפש מסמך שנקרא "יתרות לסילוקין" או "דוח יתרות" — לרוב אפשר להוריד אותו מהאפליקציה של הבנק.</p>
       <div class="dropzone" id="dropzone">
-        <div>📎 העלה תמונה או צילום מסך של הדוח</div>
+        <div>📎 העלה תמונה, צילום מסך, או PDF של הדוח</div>
         <div class="sub">עד 3 תמונות</div>
-        <input type="file" id="fileInput" accept="image/*" multiple style="display:none">
+        <input type="file" id="fileInput" accept="image/*,application/pdf" multiple style="display:none">
         <div class="thumb-row" id="thumbRow"></div>
       </div>
       <button class="btn" id="extractBtn" style="margin-top:14px;" disabled>מצא את המשכנתא שלי</button>
@@ -170,7 +170,8 @@ p{color:#111111;}
     <a class="back-link" href="#">← חזרה</a>
     <div class="card">
       <h2>מצאנו את המשכנתא שלך</h2>
-      <p class="small-note" style="margin-bottom:14px;">ככה זה נראה. הנתונים נכונים?</p>
+      <p class="small-note" style="margin-bottom:6px;">ככה זה נראה. הנתונים נכונים?</p>
+      <p class="small-note" style="margin-bottom:14px;">⚠️ ודא שהריבית שרשומה כאן היא <strong>הריבית הנומינלית</strong> ולא הריבית האפקטיבית/מתואמת — לפעמים שתיהן מופיעות בדוח זו לצד זו.</p>
       <div id="trackMiniHost"></div>
     </div>
     <div class="card">
@@ -543,15 +544,31 @@ function compressImage(file, maxDim=1600, quality=0.82){
     reader.readAsDataURL(file);
   });
 }
+function readFileAsBase64(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=> resolve({dataUrl:reader.result, base64:reader.result.split(',')[1], mime:file.type||'application/pdf', isPdf:true});
+    reader.onerror = ()=> reject(new Error('לא ניתן לקרוא את הקובץ'));
+    reader.readAsDataURL(file);
+  });
+}
 function handleFiles(files){
   uploadedImages=[]; const arr=Array.from(files).slice(0,3); let loaded=0;
   const thumbRow=document.getElementById('thumbRow'); thumbRow.innerHTML='';
   const statusEl = document.getElementById('extractStatus');
-  statusEl.textContent = arr.length? '⏳ מכין את התמונות...' : '';
-  Promise.all(arr.map(f=>compressImage(f))).then(results=>{
+  statusEl.textContent = arr.length? '⏳ מכין את הקבצים...' : '';
+  const jobs = arr.map(f => f.type==='application/pdf' ? readFileAsBase64(f) : compressImage(f));
+  Promise.all(jobs).then(results=>{
     results.forEach(r=>{
-      uploadedImages.push({base64:r.base64, mime:r.mime});
-      const img=document.createElement('img'); img.src=r.dataUrl; thumbRow.appendChild(img);
+      uploadedImages.push({base64:r.base64, mime:r.mime, isPdf:!!r.isPdf});
+      if(r.isPdf){
+        const badge=document.createElement('div');
+        badge.textContent='📄 PDF';
+        badge.style.cssText='width:70px;height:70px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:12px;';
+        thumbRow.appendChild(badge);
+      } else {
+        const img=document.createElement('img'); img.src=r.dataUrl; thumbRow.appendChild(img);
+      }
     });
     statusEl.textContent = '';
     document.getElementById('extractBtn').disabled=false;
@@ -566,10 +583,13 @@ async function extractFromImages(){
   dropzone.classList.add('busy'); statusEl.textContent='⏳ קורא את הדוח שלך...';
   document.getElementById('extractBtn').disabled=true;
 
-  const content = uploadedImages.map(im=>({type:'image', source:{type:'base64', media_type:im.mime||'image/jpeg', data:im.base64}}));
+  const content = uploadedImages.map(im=> im.isPdf
+    ? {type:'document', source:{type:'base64', media_type:'application/pdf', data:im.base64}}
+    : {type:'image', source:{type:'base64', media_type:im.mime||'image/jpeg', data:im.base64}});
   content.push({type:'text', text:
-`זהו דוח יתרות משכנתא מבנק ישראלי. חלץ את כל מסלולי ההלוואה הקיימים והחזר אך ורק JSON תקני (ללא טקסט נוסף, ללא Markdown) במבנה:
+`זהו דוח יתרות/פרטי משכנתא מבנק ישראלי. חלץ את כל מסלולי ההלוואה הקיימים והחזר אך ורק JSON תקני (ללא טקסט נוסף, ללא Markdown) במבנה:
 {"propertyValueGuess": number|null,
+ "asOfDate": string|null,
  "tracks":[{
    "userFriendlyName": string,
    "typeCategory": one of ["fixed","prime","variable"],
@@ -577,12 +597,27 @@ async function extractFromImages(){
    "remainingPrincipal": number,
    "remainingMonths": number,
    "currentRate": number,
+   "primeMargin": number|null,
    "accumulatedLinkagePaid": number,
    "originalAmount": number|null,
    "originalMonths": number|null,
    "resetFrequencyYears": number|null
  }]}
-typeCategory: "fixed"=קבועה, "prime"=פריים, "variable"=משתנה (לפי תדירות עדכון ריבית). resetFrequencyYears רק למסלולים משתנים — יש להזין בערך הקרוב ביותר מבין 1.5 (עדכון תכוף, כל שנה-שנתיים) או 5 (עדכון כל 5 שנים), לפי מה שמצוין בדוח. currentRate הוא אחוז שנתי (מספר בלי %) — במסלול פריים, זו הריבית בפועל כפי שמופיעה בדוח (המערכת תחשב את המרווח בעצמה). accumulatedLinkagePaid — הצמדה שנצברה עד היום בש"ח, 0 אם לא צמוד.`
+
+זיהוי סוג המסלול: "fixed"=קבועה. "prime"=פריים (בדוחות בנקים מקוצר לרוב לאות "P", למשל "P - 0.50%" או "פריים בניכוי..."). "variable"=משתנה עם כל עוגן אחר (לרבות עוגן שמסומן באות כמו "V", תשואת אג"ח, מק"מ וכו').
+
+מרווח (primeMargin): במסלולי פריים, לרוב הדוח כותב את המרווח במפורש בעמודה כמו "בסיס לקביעת הריבית ותוספת/הפחתה", בפורמט כמו "P - 0.50%" או "P + 0.20%" — יש לחלץ את המספר הזה (עם הסימן, למשל -0.5) לתוך primeMargin. אם המרווח לא כתוב במפורש, השאר primeMargin כ-null ומלא רק את currentRate.
+
+ריבית נומינלית מול מתואמת: currentRate הוא אחוז שנתי (מספר בלי %) — חובה להשתמש בריבית ה**נומינלית** (השדה נקרא לרוב במפורש "שיעור ריבית נומינלית ליום מכתבנו זה" או "ריבית נומינלית"), ולעולם לא בריבית "מתואמת" או "אפקטיבית" (שיעור ריבית מתואמת/אפקטיבית) — גם אם שני השדות מופיעים זה לצד זה לאותו מסלול.
+
+resetFrequencyYears: רק למסלולים משתנים. הדוחות מציינים זאת לרוב כ"תדירות שינוי הריבית בחודשים" (למשל 1, 12, או 60) — המר לשנים (חלק ב-12) ועגל לערך הקרוב מבין 1.5 או 5.
+
+סכומים ותקופות — יש לחלץ עבור כל מסלול את שני הזוגות הבאים בנפרד, ולא להתבלבל ביניהם:
+(1) remainingPrincipal + remainingMonths — המצב היום. remainingPrincipal הוא שדה ה"קרן" הנקי (העמודה שנקראת לרוב פשוט "קרן"), ולא "יתרה לסילוק"/"יתרה לפירעון" הכוללת (זו האחרונה כוללת גם ריבית שנצברה ועמלות, וגבוהה יותר מהקרן הנקייה — אל תשתמש בה).
+(2) originalAmount + originalMonths — המצב בתחילת המסלול ("סכום הלוואה מקורי" או "קרן מקורית").
+אם התקופות (remainingMonths / originalMonths) לא כתובות כמספר ישיר אלא כתאריכים (וזה המקרה הנפוץ), חשב אותן מהתאריכים: אתר בדוח שלושה תאריכים — (א) "מועד ביצוע ההלוואה" (מתי המסלול התחיל), (ב) "מועד צפוי לתשלום אחרון" / "תאריך סילוק" (מתי המסלול אמור להסתיים), (ג) תאריך המכתב עצמו (בראש הדוח, "היום" הרלוונטי). אז: remainingMonths = (ב) פחות (ג), בחודשים. originalMonths = (ב) פחות (א), בחודשים. שים גם את תאריך המכתב עצמו בשדה asOfDate (בפורמט YYYY-MM-DD אם אפשר).
+
+מסלולים כפולים/זהים (שני לווים): לעיתים אותו מסלול מופיע פעמיים ברצף עם מספרי הלוואה/מרכיב שונים אך תנאים זהים לחלוטין (ריבית, תאריכים, סוג) — זה כמעט תמיד מציין שני לווים על אותה הלוואה. במקרה כזה, מזג את הזוג למסלול אחד בודד: סכם את remainingPrincipal, originalAmount, ו-accumulatedLinkagePaid של שניהם יחד (שאר השדות זהים ממילא, אין צורך לשנותם). אל תחזיר את אותו מסלול פעמיים בנפרד.`
   });
 
   try{
@@ -609,7 +644,9 @@ typeCategory: "fixed"=קבועה, "prime"=פריים, "variable"=משתנה (ל�
         originalTermYears: t.originalMonths!=null? +(t.originalMonths/12).toFixed(1) : null,
         userFriendlyName: t.userFriendlyName || null,
       };
-      if(type==='prime'){ track.primeMargin = +(((+t.currentRate||primeRateToday) - primeRateToday).toFixed(2)); }
+      if(type==='prime'){
+        track.primeMargin = t.primeMargin!=null ? +t.primeMargin : +(((+t.currentRate||primeRateToday) - primeRateToday).toFixed(2));
+      }
       else { track.rate = +t.currentRate||5; }
       return track;
     });
@@ -758,10 +795,14 @@ function renderTrackMiniCards(){
     const rateTxt = t.type==='prime'
       ? `${trackRate(t).toFixed(2)}% (פריים ${primeRateToday.toFixed(2)}% ${t.primeMargin>=0?'+':''}${(t.primeMargin||0).toFixed(2)})`
       : trackRate(t).toFixed(2)+'%';
+    const origRow = t.originalAmount
+      ? `<div class="row"><span>סכום מקורי</span><strong>${Math.round(t.originalAmount).toLocaleString('he-IL')} ₪ ${t.originalTermYears?'('+t.originalTermYears+' שנים)':''}</strong></div>`
+      : '';
     return `<div class="track-mini">
       <div class="name">${name}</div>
       <div class="row"><span>ריבית נוכחית</span><strong>${rateTxt}</strong></div>
-      <div class="row"><span>יתרה</span><strong>${Math.round(t.remainingPrincipal+(t.linked?t.accumulatedLinkage:0)).toLocaleString('he-IL')} ₪</strong></div>
+      ${origRow}
+      <div class="row"><span>יתרה לתשלום היום</span><strong>${Math.round(t.remainingPrincipal+(t.linked?t.accumulatedLinkage:0)).toLocaleString('he-IL')} ₪</strong></div>
       <div class="row"><span>שנים שנשארו</span><strong>${t.remainingYears}</strong></div>
     </div>`;
   }).join('');
