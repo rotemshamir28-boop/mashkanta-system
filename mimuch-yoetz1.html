@@ -557,7 +557,8 @@ function handleFiles(files){
   const thumbRow=document.getElementById('thumbRow'); thumbRow.innerHTML='';
   const statusEl = document.getElementById('extractStatus');
   statusEl.textContent = arr.length? '⏳ מכין את הקבצים...' : '';
-  const jobs = arr.map(f => f.type==='application/pdf' ? readFileAsBase64(f) : compressImage(f));
+  const isPdfFile = f => f.type==='application/pdf' || /\.pdf$/i.test(f.name||'');
+  const jobs = arr.map(f => isPdfFile(f) ? readFileAsBase64(f) : compressImage(f));
   Promise.all(jobs).then(results=>{
     results.forEach(r=>{
       uploadedImages.push({base64:r.base64, mime:r.mime, isPdf:!!r.isPdf});
