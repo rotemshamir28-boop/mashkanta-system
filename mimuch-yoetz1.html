@@ -135,7 +135,7 @@ p{color:#111111;}
       <div class="dropzone" id="dropzone">
         <div>📎 העלה תמונה, צילום מסך, או PDF של הדוח</div>
         <div class="sub">עד 3 תמונות</div>
-        <input type="file" id="fileInput" accept="image/*,application/pdf" multiple style="display:none">
+        <input type="file" id="fileInput" accept="image/*,.pdf,application/pdf" multiple style="display:none">
         <div class="thumb-row" id="thumbRow"></div>
       </div>
       <button class="btn" id="extractBtn" style="margin-top:14px;" disabled>מצא את המשכנתא שלי</button>
@@ -444,6 +444,45 @@ function impliedRate(principal, payment, months){
 }
 
 /* ============================================================
+   INVERSE: what new rate is needed to reach a target total-interest
+   savings, holding the remaining term fixed. Lets the tool show
+   "save this much -> need roughly this rate" without needing an
+   always-current market-rate input.
+============================================================ */
+function rateForTargetInterest(principal, months, targetInterest, ceilingRate){
+  let lo=0, hi=Math.max(ceilingRate||0.01, 0.01);
+  for(let i=0;i<60;i++){
+    const mid=(lo+hi)/2;
+    const totals = totalsFromSchedule(buildSchedule(principal, mid, months));
+    if(totals.interest > targetInterest) hi=mid; else lo=mid;
+  }
+  return (lo+hi)/2;
+}
+function niceIncrement(raw){
+  if(raw<=0) return 1000;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw/magnitude;
+  let nice; if(norm<1.5) nice=1; else if(norm<3) nice=2; else if(norm<7) nice=5; else nice=10;
+  return nice*magnitude;
+}
+function buildSavingsTable(principal, months, currentRate){
+  if(principal<=0 || months<=0) return [];
+  const currentInterest = totalsFromSchedule(buildSchedule(principal, currentRate, months)).interest;
+  const floorInterest = totalsFromSchedule(buildSchedule(principal, 0.5, months)).interest; // 0.5% as a practical floor
+  const maxSavings = Math.max(0, currentInterest - floorInterest);
+  if(maxSavings<=0) return [];
+  const inc = niceIncrement(maxSavings/6);
+  const bands = []; let s = 0;
+  while(s < maxSavings && bands.length < 7){
+    const next = Math.min(s+inc, maxSavings);
+    const neededRate = rateForTargetInterest(principal, months, currentInterest - s, currentRate);
+    bands.push({from:s, to:next, rate:neededRate});
+    s = next;
+  }
+  return bands;
+}
+
+/* ============================================================
    AMOUNT FIELD FORMATTING (thousands separators while typing)
 ============================================================ */
 function liveFormatAmount(el){
@@ -609,16 +648,18 @@ async function extractFromImages(){
 
 מרווח (primeMargin): במסלולי פריים, לרוב הדוח כותב את המרווח במפורש בעמודה כמו "בסיס לקביעת הריבית ותוספת/הפחתה", בפורמט כמו "P - 0.50%" או "P + 0.20%" — יש לחלץ את המספר הזה (עם הסימן, למשל -0.5) לתוך primeMargin. אם המרווח לא כתוב במפורש, השאר primeMargin כ-null ומלא רק את currentRate.
 
-ריבית נומינלית מול מתואמת: currentRate הוא אחוז שנתי (מספר בלי %) — חובה להשתמש בריבית ה**נומינלית** (השדה נקרא לרוב במפורש "שיעור ריבית נומינלית ליום מכתבנו זה" או "ריבית נומינלית"), ולעולם לא בריבית "מתואמת" או "אפקטיבית" (שיעור ריבית מתואמת/אפקטיבית) — גם אם שני השדות מופיעים זה לצד זה לאותו מסלול.
+ריבית נומינלית מול מתואמת: currentRate הוא אחוז שנתי (מספר בלי %) — חובה להשתמש בריבית ה**נומינלית** בלבד. השדה מכונה בבנקים שונים בניסוחים שונים, למשל: "שיעור ריבית נומינלית ליום מכתבנו זה" (הפועלים), "שיעור הריבית בחלק זה" (מזרחי-טפחות), או פשוט "ריבית נומינלית". לעולם אל תשתמש בשדה המכונה "ריבית מתואמת"/"ריבית אפקטיבית"/"שיעור ריבית מתואמת" — גם אם הוא מופיע ממש ליד השדה הנכון ונראה דומה לו. לעיתים הדוח אף מציין זאת במפורש ("החישוב מבוצע במונחי ריבית נומינלית ולא מתואמת") — זהו אישור שאתה בכיוון הנכון.
 
 resetFrequencyYears: רק למסלולים משתנים. הדוחות מציינים זאת לרוב כ"תדירות שינוי הריבית בחודשים" (למשל 1, 12, או 60) — המר לשנים (חלק ב-12) ועגל לערך הקרוב מבין 1.5 או 5.
 
 סכומים ותקופות — יש לחלץ עבור כל מסלול את שני הזוגות הבאים בנפרד, ולא להתבלבל ביניהם:
-(1) remainingPrincipal + remainingMonths — המצב היום. remainingPrincipal הוא שדה ה"קרן" הנקי (העמודה שנקראת לרוב פשוט "קרן"), ולא "יתרה לסילוק"/"יתרה לפירעון" הכוללת (זו האחרונה כוללת גם ריבית שנצברה ועמלות, וגבוהה יותר מהקרן הנקייה — אל תשתמש בה).
-(2) originalAmount + originalMonths — המצב בתחילת המסלול ("סכום הלוואה מקורי" או "קרן מקורית").
-אם התקופות (remainingMonths / originalMonths) לא כתובות כמספר ישיר אלא כתאריכים (וזה המקרה הנפוץ), חשב אותן מהתאריכים: אתר בדוח שלושה תאריכים — (א) "מועד ביצוע ההלוואה" (מתי המסלול התחיל), (ב) "מועד צפוי לתשלום אחרון" / "תאריך סילוק" (מתי המסלול אמור להסתיים), (ג) תאריך המכתב עצמו (בראש הדוח, "היום" הרלוונטי). אז: remainingMonths = (ב) פחות (ג), בחודשים. originalMonths = (ב) פחות (א), בחודשים. שים גם את תאריך המכתב עצמו בשדה asOfDate (בפורמט YYYY-MM-DD אם אפשר).
+(1) remainingPrincipal + remainingMonths — המצב היום. remainingPrincipal הוא היתרה הנקייה, מכונה "קרן", "יתרת הקרן", או "קרן נותרת" — **לעולם לא** שדה כמו "יתרה לסילוק"/"יתרה לפירעון"/"סיכום ביניים"/"סכום הסילוק" (אלו כוללים גם ריבית שנצברה, הפרשי הצמדה על הריבית, ועמלות, וגבוהים מהקרן הנקייה; אם יש ספק, בחר את הסכום הנמוך יותר מבין השניים). accumulatedLinkagePaid מכונה "הצמדה שנצברה" או "הפרשי הצמדה על הקרן" (לא על הריבית).
+(2) originalAmount + originalMonths — המצב בתחילת המסלול, מכונה "סכום הלוואה מקורי", "קרן מקורית", או "סכום חלק זה בעת הביצוע".
+אם התקופות (remainingMonths / originalMonths) לא כתובות כמספר ישיר אלא כתאריכים (וזה המקרה הנפוץ), חשב אותן מהתאריכים: אתר בדוח שלושה תאריכים — (א) תאריך תחילת המסלול ("מועד ביצוע ההלוואה"/"תאריך הביצוע"), (ב) תאריך הסיום הצפוי ("מועד צפוי לתשלום אחרון"/"תאריך סילוק חלק זה"/"תאריך סיום ההלוואה"), (ג) תאריך המכתב/הדוח עצמו (בראש העמוד, לעיתים "מועד החישוב"). אז: remainingMonths = (ב) פחות (ג), בחודשים. originalMonths = (ב) פחות (א), בחודשים. שים גם את תאריך המכתב עצמו בשדה asOfDate (בפורמט YYYY-MM-DD אם אפשר).
 
-מסלולים כפולים/זהים (שני לווים): לעיתים אותו מסלול מופיע פעמיים ברצף עם מספרי הלוואה/מרכיב שונים אך תנאים זהים לחלוטין (ריבית, תאריכים, סוג) — זה כמעט תמיד מציין שני לווים על אותה הלוואה. במקרה כזה, מזג את הזוג למסלול אחד בודד: סכם את remainingPrincipal, originalAmount, ו-accumulatedLinkagePaid של שניהם יחד (שאר השדות זהים ממילא, אין צורך לשנותם). אל תחזיר את אותו מסלול פעמיים בנפרד.`
+מסלולים כפולים/זהים (שני לווים): לעיתים אותו מסלול מופיע פעמיים ברצף עם מספרי הלוואה/מרכיב שונים אך תנאים זהים לחלוטין (ריבית, תאריכים, סוג) — זה כמעט תמיד מציין שני לווים על אותה הלוואה. במקרה כזה, מזג את הזוג למסלול אחד בודד: סכם את remainingPrincipal, originalAmount, ו-accumulatedLinkagePaid של שניהם יחד (שאר השדות זהים ממילא, אין צורך לשנותם). אל תחזיר את אותו מסלול פעמיים בנפרד.
+
+מבנה הדוח משתנה בין בנקים — לעיתים טבלה מרוכזת אחת ("יתרות לסילוקין"), ולעיתים בלוק פירוט נפרד לכל מסלול/"חלק" (כמו דוח "נתונים לסילוק" עם כותרת "מס' חלק" לכל מסלול). יש לזהות את המבנה הספציפי ולחלץ את אותם השדות הסמנטיים לפי הכללים שלעיל, ללא תלות בפריסה הוויזואלית המדויקת.`
   });
 
   try{
@@ -963,10 +1004,28 @@ function renderPerTrack(){
     const name = t.userFriendlyName || def.label;
     const dot = r.status==='safe'?'🟢':r.status==='warn'?'🟡':'🔴';
     const forecastNote = forecasts[t.type] ? `<p style="font-size:12.5px;color:var(--muted);margin:8px 0 0;">💬 ${forecasts[t.type]}</p>` : '';
+
+    const principal = trackPrincipalBase(t);
+    const months = trackMonths(t);
+    const rate = trackRate(t);
+    const bands = buildSavingsTable(principal, months, rate);
+    let savingsTableHtml = '';
+    if(bands.length){
+      savingsTableHtml = `
+        <p style="font-size:12.5px;font-weight:700;margin:10px 0 4px;">כמה תצטרך לחסוך כדי לקבל ריבית חדשה כזו (עד סוף התקופה, ${months>0?Math.round(months/12):0} שנים):</p>
+        <table class="simple" style="font-size:12px;">
+          <thead><tr><th>חיסכון מצטבר</th><th>ריבית חדשה נדרשת</th></tr></thead>
+          <tbody>
+            ${bands.map(b=>`<tr><td>${Math.round(b.from).toLocaleString('he-IL')}–${Math.round(b.to).toLocaleString('he-IL')} ₪</td><td>עד כ-${b.rate.toFixed(2)}%</td></tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+
     return `<div class="track-mini">
       <div class="name">${dot} ${name}</div>
       <p style="font-size:13.5px;margin:6px 0 0;">${r.reason}</p>
       ${forecastNote}
+      ${savingsTableHtml}
     </div>`;
   }).join('');
 }
