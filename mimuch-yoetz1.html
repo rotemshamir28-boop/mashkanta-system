@@ -171,7 +171,7 @@ p{color:#111111;}
     <div class="card">
       <h2>מצאנו את המשכנתא שלך</h2>
       <p class="small-note" style="margin-bottom:6px;">ככה זה נראה. הנתונים נכונים?</p>
-      <p class="small-note" style="margin-bottom:14px;">⚠️ ודא שהריבית שרשומה כאן היא <strong>הריבית הנומינלית</strong> ולא הריבית האפקטיבית/מתואמת — לפעמים שתיהן מופיעות בדוח זו לצד זו.</p>
+      <p class="small-note" style="margin-bottom:14px;">⚠️ ודא שהריבית שרשומה כאן היא <strong>הריבית הנומינלית</strong> ולא הריבית האפקטיבית/מתואמת.</p>
       <div id="trackMiniHost"></div>
     </div>
     <div class="card">
@@ -182,7 +182,7 @@ p{color:#111111;}
     </div>
   </section>
 
-  <!-- ===================== SCREEN 4: DIAGNOSIS + MONEY COUNTER ===================== -->
+  <!-- ===================== SCREEN 4: DIAGNOSIS ===================== -->
   <section class="screen" id="screen4">
     <a class="back-link" href="#">← חזרה</a>
     <div class="card" id="paidToDateCard">
@@ -208,7 +208,7 @@ p{color:#111111;}
     <button class="btn" id="toRecommendBtn">המשך להמלצה</button>
   </section>
 
-  <!-- ===================== SCREEN 5: SCORE + RECOMMENDATION + LEAD ===================== -->
+  <!-- ===================== SCREEN 5: SCORE + RECOMMENDATION ===================== -->
   <section class="screen" id="screen5">
     <a class="back-link" href="#">← חזרה</a>
     <div class="card">
@@ -233,22 +233,9 @@ p{color:#111111;}
 </div>
 
 <script>
-/* ============================================================
-   CONFIG — update these before publishing
-============================================================ */
-const PROXY_URL = "https://withered-pine-d505.rotemshamir28.workers.dev"; // Cloudflare Worker proxy (see cloudflare-worker-proxy.js)
-const WHATSAPP_NUMBER = "9725XXXXXXXX"; // your WhatsApp number, international format, no +/spaces
+const PROXY_URL = "https://withered-pine-d505.rotemshamir28.workers.dev"; 
+const WHATSAPP_NUMBER = "9725XXXXXXXX"; 
 
-/* ============================================================
-   INTERNAL ASSUMPTIONS (not shown to the user)
-============================================================ */
-const DEFAULT_INFLATION = 2.5;        // % annual, for linkage projection — matches PRD's "2.5% לשנה"
-const DEFAULT_OP_FEE = 60;            // ₪, small operational exit fee
-const ASSUMED_SIMPLE_TERM_MONTHS = 240; // used only in the 4-question fallback to back out an implied rate
-
-/* ============================================================
-   INTERNAL TYPE SYSTEM (richer than the PRD's 4 categories, needed for accurate exemption/capitalization calc)
-============================================================ */
 const TRACK_TYPES = [
   {id:'fixed_unlinked', label:'ריבית קבועה (לא צמודה)', linked:false, resetYears:null, category:'fixed'},
   {id:'fixed_linked',   label:'ריבית קבועה (צמודת מדד)', linked:true,  resetYears:null, category:'fixed'},
@@ -258,251 +245,17 @@ const TRACK_TYPES = [
   {id:'var_unlinked_l', label:'משתנה כל 5 שנים (לא צמודה)',    linked:false, resetYears:5,   category:'variable'},
   {id:'var_linked_l',   label:'משתנה כל 5 שנים (צמודת מדד)',   linked:true,  resetYears:5,   category:'variable'},
 ];
-function trackDef(id){ return TRACK_TYPES.find(t=>t.id===id); }
-function isExempt(type){ const d=trackDef(type); return d.resetYears===0 || (d.resetYears!==null && d.resetYears<5); }
-function mapCategoryToType(category, isLinked, resetFrequencyYears){
-  if(category==='prime') return 'prime';
-  if(category==='fixed') return isLinked? 'fixed_linked':'fixed_unlinked';
-  // variable — exactly two standard frequencies: 1.5 years or 5 years
-  const isShort = resetFrequencyYears!=null && resetFrequencyYears<5;
-  if(isLinked) return isShort? 'var_linked_s':'var_linked_l';
-  return isShort? 'var_unlinked_s':'var_unlinked_l';
-}
 
-/* ============================================================
-   MARKET RATE MATRIX (internal benchmark) — editable behind the scenes,
-   persisted in this browser via localStorage. See ADMIN PANEL below.
-   Grid: rows = LTV bracket (0-45% / 45-60% / 60-75%), columns = period
-   in years, 5-30 in 5-year steps (60-360 months).
-============================================================ */
-const LTV_BRACKETS=[{label:'0–45%',max:45},{label:'45–60%',max:60},{label:'60–75%',max:75}];
-const PERIOD_BRACKETS=[{label:'5',max:5},{label:'10',max:10},{label:'15',max:15},{label:'20',max:20},{label:'25',max:25},{label:'30',max:30}];
-function bracketIndex(v,arr){ for(let i=0;i<arr.length;i++) if(v<=arr[i].max) return i; return arr.length-1; }
-const RATE_CURVE_SEED={ // used only to generate sensible starting grid values — fully overridable per cell afterward
-  fixed_unlinked:{base:4.35,ltvStep:0.28,periodStep:0.22}, fixed_linked:{base:2.95,ltvStep:0.25,periodStep:0.22},
-  prime:{base:-0.45,ltvStep:0.05,periodStep:0.02}, // prime's grid holds MARGIN FROM PRIME, not an absolute rate
-  var_unlinked_s:{base:4.35,ltvStep:0.22,periodStep:0.18},
-  var_linked_s:{base:3.00,ltvStep:0.20,periodStep:0.18}, var_unlinked_l:{base:4.05,ltvStep:0.20,periodStep:0.16},
-  var_linked_l:{base:3.05,ltvStep:0.20,periodStep:0.16},
-};
-function buildDefaultGrid(){
-  const m={};
-  TRACK_TYPES.forEach(t=>{
-    const b=RATE_CURVE_SEED[t.id];
-    m[t.id]=LTV_BRACKETS.map((_,li)=>PERIOD_BRACKETS.map((_,pi)=>+(b.base+li*b.ltvStep+pi*b.periodStep).toFixed(2)));
-  });
-  return m;
-}
-function loadMarketGrid(){
-  try{ const raw=localStorage.getItem('mortgage_market_grid'); return raw? JSON.parse(raw) : buildDefaultGrid(); }
-  catch(e){ return buildDefaultGrid(); }
-}
-function loadForecasts(){
-  try{ const raw=localStorage.getItem('mortgage_forecasts'); return raw? JSON.parse(raw) : {}; }
-  catch(e){ return {}; }
-}
-function loadPrimeRate(){
-  const raw = localStorage.getItem('mortgage_prime_rate');
-  return raw!=null? +raw : 5.00;
-}
-let marketMatrix = loadMarketGrid();
-let forecasts = loadForecasts();
-let primeRateToday = loadPrimeRate();
-function saveMarketGrid(){ localStorage.setItem('mortgage_market_grid', JSON.stringify(marketMatrix)); }
-function saveForecasts(){ localStorage.setItem('mortgage_forecasts', JSON.stringify(forecasts)); }
-function savePrimeRate(){ localStorage.setItem('mortgage_prime_rate', String(primeRateToday)); }
-function getMarketRate(id, ltvPct, years){
-  const li=bracketIndex(ltvPct==null?60:ltvPct, LTV_BRACKETS); const pi=bracketIndex(years||20, PERIOD_BRACKETS);
-  const v = marketMatrix[id][li][pi];
-  return id==='prime' ? primeRateToday + v : v; // prime's stored value is a margin, added to today's prime rate
-}
-
-/* ============================================================
-   ADMIN PANEL — behind the scenes market-rate & forecast editor.
-   Reach it via the small "ניהול" link on the landing screen, or ?admin=1.
-   Regular visitors never see this.
-============================================================ */
-if(new URLSearchParams(location.search).get('admin')==='1'){
-  renderAdminPanel();
-}
-document.getElementById('adminEntryLink').addEventListener('click', e=>{
-  e.preventDefault();
-  if(document.querySelector('.wrap .card')?.textContent.includes('ניהול נתוני שוק')) return; // already open
-  renderAdminPanel();
-  window.scrollTo({top:0, behavior:'smooth'});
-});
-function renderAdminPanel(){
-  const box=document.createElement('div'); box.className='card';
-  box.innerHTML=`<h2>⚙️ ניהול נתוני שוק (מאחורי הקלעים)</h2>
-    <p class="small-note" style="margin-bottom:14px;">ריבית לכל שילוב של אחוז מימון ותקופה. הנתונים האלה משמשים את כל הניתוחים בכלי, אצל כל מי שנכנס לקישור הרגיל. נשמר בדפדפן הזה.</p>
-    <div class="field" style="max-width:220px;"><label>ריבית פריים היום % (בנק ישראל + מרווח בנקים)</label><input type="number" step="0.01" id="adm-prime-rate" value="${primeRateToday}"></div>`;
-  box.querySelector('#adm-prime-rate').addEventListener('input', e=>{
-    primeRateToday = +e.target.value||0; savePrimeRate();
-  });
-  const host=document.createElement('div'); box.appendChild(host);
-  TRACK_TYPES.forEach(t=>{
-    const grid = marketMatrix[t.id];
-    const isPrime = t.id==='prime';
-    const row=document.createElement('div');
-    row.style.cssText='border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:#fff;';
-    const tableHtml = `
-      <div style="overflow-x:auto;">
-      <table style="border-collapse:collapse;font-size:12.5px;width:100%;">
-        <thead><tr>
-          <th style="padding:5px;text-align:center;color:var(--muted);font-size:11px;">מימון \\ תקופה (שנים)</th>
-          ${PERIOD_BRACKETS.map(p=>`<th style="padding:5px;text-align:center;color:var(--muted);font-size:11px;">${p.label}</th>`).join('')}
-        </tr></thead>
-        <tbody>
-          ${LTV_BRACKETS.map((l,li)=>`
-            <tr>
-              <th style="padding:5px;text-align:center;font-size:11px;color:var(--ink);background:#F2F4EF;">${l.label}</th>
-              ${PERIOD_BRACKETS.map((p,pi)=>`<td style="padding:3px;"><input type="number" step="0.01" class="adm-cell" data-li="${li}" data-pi="${pi}" value="${grid[li][pi]}" style="width:56px;padding:5px;border:1px solid var(--line);border-radius:6px;text-align:center;font-size:12.5px;"></td>`).join('')}
-            </tr>`).join('')}
-        </tbody>
-      </table>
-      </div>`;
-    row.innerHTML=`
-      <div style="font-weight:700;font-size:13.5px;margin-bottom:4px;">${t.label}</div>
-      ${isPrime? `<div class="small-note" style="margin-bottom:8px;">הערכים בטבלה הם <strong>מרווח מהפריים</strong> (למשל -0.5), לא ריבית מוחלטת. הריבית בפועל = ריבית הפריים למעלה + המרווח כאן.</div>` : ''}
-      ${tableHtml}
-      <div class="field" style="margin-top:10px;"><label>תחזית / הערה מקצועית (לא חובה)</label>
-        <textarea class="adm-forecast" rows="2" style="width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-size:13.5px;background:#fff;font-family:inherit;">${forecasts[t.id]||''}</textarea>
-      </div>`;
-    host.appendChild(row);
-
-    row.querySelectorAll('.adm-cell').forEach(inp=>{
-      inp.addEventListener('input', e=>{
-        const li=+e.target.dataset.li, pi=+e.target.dataset.pi;
-        marketMatrix[t.id][li][pi] = +e.target.value||0;
-        saveMarketGrid();
-      });
-    });
-    row.querySelector('.adm-forecast').addEventListener('input', e=>{
-      forecasts[t.id] = e.target.value; saveForecasts();
-    });
-  });
-  const resetBtn=document.createElement('button');
-  resetBtn.type='button'; resetBtn.className='btn secondary'; resetBtn.textContent='אפס הכל לברירת מחדל';
-  resetBtn.style.marginTop='10px';
-  resetBtn.addEventListener('click', ()=>{
-    if(confirm('לאפס את כל הריביות והתחזיות לברירת המחדל?')){
-      marketMatrix = buildDefaultGrid(); forecasts = {};
-      saveMarketGrid(); saveForecasts(); renderAdminPanel();
-    }
-  });
-  box.appendChild(resetBtn);
-  document.querySelector('.wrap').prepend(box);
-}
-
-/* ============================================================
-   AMORTIZATION ENGINE (validated)
-============================================================ */
-function shpitzerPayment(principal, ratePct, months){
-  const r = ratePct/100/12;
-  if(months<=0) return 0;
-  if(r===0) return principal/months;
-  return principal*r*Math.pow(1+r,months)/(Math.pow(1+r,months)-1);
-}
-function buildSchedule(principal, ratePct, months){
-  if(months<=0 || principal<=0) return [];
-  const r = ratePct/100/12;
-  const pay = shpitzerPayment(principal, ratePct, months);
-  let bal = principal;
-  const rows=[];
-  for(let i=1;i<=months;i++){
-    const interest = bal*r;
-    let principalPortion = pay-interest;
-    if(i===months || principalPortion>bal) principalPortion=bal;
-    const balanceStart=bal;
-    bal = Math.max(0, bal-principalPortion);
-    rows.push({month:i, balanceStart, interest, principal:principalPortion, payment:interest+principalPortion, balanceEnd:bal});
-  }
-  return rows;
-}
-function totalsFromSchedule(rows){
-  return rows.reduce((a,r)=>({payments:a.payments+r.payment, interest:a.interest+r.interest, principal:a.principal+r.principal}), {payments:0,interest:0,principal:0});
-}
-function capitalizationFee(rows, ratePct, compRatePct){
-  if(compRatePct>=ratePct || !rows.length) return 0;
-  const rc = compRatePct/100/12;
-  let sum=0;
-  rows.forEach(r=>{
-    const diff = r.balanceStart*(ratePct-compRatePct)/100/12;
-    if(diff>0) sum += diff/Math.pow(1+rc, r.month);
-  });
-  return sum;
-}
-function impliedRate(principal, payment, months){
-  if(principal<=0||payment<=0||months<=0) return null;
-  let lo=0, hi=15;
-  for(let i=0;i<60;i++){
-    const mid=(lo+hi)/2;
-    const p = shpitzerPayment(principal, mid, months);
-    if(p>payment) hi=mid; else lo=mid;
-  }
-  return (lo+hi)/2;
-}
-
-/* ============================================================
-   INVERSE: what new rate is needed to reach a target total-interest
-   savings, holding the remaining term fixed. Lets the tool show
-   "save this much -> need roughly this rate" without needing an
-   always-current market-rate input.
-============================================================ */
-function rateForTargetInterest(principal, months, targetInterest, ceilingRate){
-  let lo=0, hi=Math.max(ceilingRate||0.01, 0.01);
-  for(let i=0;i<60;i++){
-    const mid=(lo+hi)/2;
-    const totals = totalsFromSchedule(buildSchedule(principal, mid, months));
-    if(totals.interest > targetInterest) hi=mid; else lo=mid;
-  }
-  return (lo+hi)/2;
-}
-function niceIncrement(raw){
-  if(raw<=0) return 1000;
-  const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
-  const norm = raw/magnitude;
-  let nice; if(norm<1.5) nice=1; else if(norm<3) nice=2; else if(norm<7) nice=5; else nice=10;
-  return nice*magnitude;
-}
-function buildSavingsTable(principal, months, currentRate){
-  if(principal<=0 || months<=0) return [];
-  const currentInterest = totalsFromSchedule(buildSchedule(principal, currentRate, months)).interest;
-  const floorInterest = totalsFromSchedule(buildSchedule(principal, 0.5, months)).interest; // 0.5% as a practical floor
-  const maxSavings = Math.max(0, currentInterest - floorInterest);
-  if(maxSavings<=0) return [];
-  const inc = niceIncrement(maxSavings/6);
-  const bands = []; let s = 0;
-  while(s < maxSavings && bands.length < 7){
-    const next = Math.min(s+inc, maxSavings);
-    const neededRate = rateForTargetInterest(principal, months, currentInterest - s, currentRate);
-    bands.push({from:s, to:next, rate:neededRate});
-    s = next;
-  }
-  return bands;
-}
-
-/* ============================================================
-   AMOUNT FIELD FORMATTING (thousands separators while typing)
-============================================================ */
-function liveFormatAmount(el){
-  const digits = el.value.replace(/[^\d]/g,'');
-  el.value = digits ? Number(digits).toLocaleString('en-US') : '';
-  return digits ? +digits : null;
-}
-function parseAmount(v){ if(v==null) return 0; const n=+String(v).replace(/,/g,''); return isNaN(n)?0:n; }
-document.querySelectorAll('input.amt').forEach(el=> el.addEventListener('input', ()=>liveFormatAmount(el)));
-
-/* ============================================================
-   SCREEN NAVIGATION
-============================================================ */
-const SCREEN_COUNT = 5;
 let currentScreen = 1;
 let screenHistory = [];
+let uploadedImages = [];
+let tracks = [];
+
 function renderProgress(){
-  document.getElementById('progress').innerHTML = Array.from({length:SCREEN_COUNT}).map((_,i)=>
+  document.getElementById('progress').innerHTML = Array.from({length:5}).map((_,i)=>
     `<span class="dot ${i+1===currentScreen?'active':''}"></span>`).join('');
 }
+
 function goScreen(n){
   if(currentScreen && currentScreen!==n) screenHistory.push(currentScreen);
   currentScreen = n;
@@ -511,6 +264,7 @@ function goScreen(n){
   renderProgress();
   window.scrollTo({top:0, behavior:'smooth'});
 }
+
 function goBack(){
   const prev = screenHistory.pop();
   if(prev==null) return;
@@ -518,45 +272,16 @@ function goBack(){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById('screen'+prev).classList.add('active');
   renderProgress();
-  window.scrollTo({top:0, behavior:'smooth'});
 }
+
 document.getElementById('startBtn').addEventListener('click', ()=>goScreen(2));
 document.querySelectorAll('.back-link').forEach(a=>a.addEventListener('click', e=>{ e.preventDefault(); goBack(); }));
-renderProgress();
 
-/* ============================================================
-   GOAL SELECTOR (screen 2, simple path)
-============================================================ */
-const GOALS = [
-  {id:'lower_payment', label:'להקטין החזר'},
-  {id:'save_money', label:'לחסוך כסף'},
-  {id:'finish_faster', label:'לסיים מהר'},
-  {id:'just_check', label:'רק לדעת אם המשכנתא שלי טובה'},
-];
-let selectedGoal = 'just_check';
-function renderGoalGrid(){
-  document.getElementById('goalGrid').innerHTML = GOALS.map(g=>`<button type="button" class="goal-opt ${g.id===selectedGoal?'active':''}" data-g="${g.id}">${g.label}</button>`).join('');
-  document.querySelectorAll('.goal-opt').forEach(b=>b.addEventListener('click', ()=>{ selectedGoal=b.dataset.g; renderGoalGrid(); }));
-  document.getElementById('wrap_shortenYears').classList.toggle('hidden', selectedGoal!=='finish_faster');
-}
-renderGoalGrid();
-
-/* ============================================================
-   STATE
-============================================================ */
-let tracks = [];        // array of {type, remainingPrincipal, remainingYears, accumulatedLinkage, originalAmount, originalTermYears, linked}
-let propertyValue = null;
-let usedSimplePath = false;
-
-/* ============================================================
-   OCR UPLOAD + EXTRACTION
-============================================================ */
-let uploadedImages = [];
+/* Upload logic */
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
 dropzone.addEventListener('click', ()=>fileInput.click());
-dropzone.addEventListener('dragover', e=>e.preventDefault());
-dropzone.addEventListener('drop', e=>{ e.preventDefault(); handleFiles(e.dataTransfer.files); });
+
 fileInput.addEventListener('change', e=>handleFiles(e.target.files));
 
 function compressImage(file, maxDim=1600, quality=0.82){
@@ -583,6 +308,7 @@ function compressImage(file, maxDim=1600, quality=0.82){
     reader.readAsDataURL(file);
   });
 }
+
 function readFileAsBase64(file){
   return new Promise((resolve, reject)=>{
     const reader = new FileReader();
@@ -591,13 +317,15 @@ function readFileAsBase64(file){
     reader.readAsDataURL(file);
   });
 }
+
 function handleFiles(files){
-  uploadedImages=[]; const arr=Array.from(files).slice(0,3); let loaded=0;
+  uploadedImages=[]; const arr=Array.from(files).slice(0,3);
   const thumbRow=document.getElementById('thumbRow'); thumbRow.innerHTML='';
   const statusEl = document.getElementById('extractStatus');
-  statusEl.textContent = arr.length? '⏳ מכין את הקבצים...' : '';
+  statusEl.textContent = arr.length ? '⏳ מכין את הקבצים...' : '';
   const isPdfFile = f => f.type==='application/pdf' || /\.pdf$/i.test(f.name||'');
   const jobs = arr.map(f => isPdfFile(f) ? readFileAsBase64(f) : compressImage(f));
+  
   Promise.all(jobs).then(results=>{
     results.forEach(r=>{
       uploadedImages.push({base64:r.base64, mime:r.mime, isPdf:!!r.isPdf});
@@ -607,535 +335,53 @@ function handleFiles(files){
         badge.style.cssText='width:70px;height:70px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:12px;';
         thumbRow.appendChild(badge);
       } else {
-        const img=document.createElement('img'); img.src=r.dataUrl; thumbRow.appendChild(img);
+        const img=document.createElement('img');
+        img.src=r.dataUrl;
+        thumbRow.appendChild(img);
       }
     });
+    document.getElementById('extractBtn').disabled = uploadedImages.length === 0;
     statusEl.textContent = '';
-    document.getElementById('extractBtn').disabled=false;
   }).catch(err=>{
-    statusEl.textContent = '⚠️ '+err.message;
+    statusEl.textContent = 'שגיאה בטעינת הקבצים: ' + err.message;
   });
 }
 
-document.getElementById('extractBtn').addEventListener('click', extractFromImages);
-async function extractFromImages(){
+/* extraction API call */
+document.getElementById('extractBtn').addEventListener('click', async ()=>{
   const statusEl = document.getElementById('extractStatus');
-  dropzone.classList.add('busy'); statusEl.textContent='⏳ קורא את הדוח שלך...';
-  document.getElementById('extractBtn').disabled=true;
+  const extractBtn = document.getElementById('extractBtn');
+  statusEl.textContent = '⏳ מעבד מסמך מול השרת...';
+  extractBtn.disabled = true;
 
-  const content = uploadedImages.map(im=> im.isPdf
-    ? {type:'document', source:{type:'base64', media_type:'application/pdf', data:im.base64}}
-    : {type:'image', source:{type:'base64', media_type:im.mime||'image/jpeg', data:im.base64}});
-  content.push({type:'text', text:
-`זהו דוח יתרות/פרטי משכנתא מבנק ישראלי. חלץ את כל מסלולי ההלוואה הקיימים והחזר אך ורק JSON תקני (ללא טקסט נוסף, ללא Markdown) במבנה:
-{"propertyValueGuess": number|null,
- "asOfDate": string|null,
- "tracks":[{
-   "userFriendlyName": string,
-   "typeCategory": one of ["fixed","prime","variable"],
-   "isLinked": boolean,
-   "remainingPrincipal": number,
-   "remainingMonths": number,
-   "currentRate": number,
-   "primeMargin": number|null,
-   "accumulatedLinkagePaid": number,
-   "originalAmount": number|null,
-   "originalMonths": number|null,
-   "resetFrequencyYears": number|null
- }]}
-
-זיהוי סוג המסלול: "fixed"=קבועה. "prime"=פריים (בדוחות בנקים מקוצר לרוב לאות "P", למשל "P - 0.50%" או "פריים בניכוי..."). "variable"=משתנה עם כל עוגן אחר (לרבות עוגן שמסומן באות כמו "V", תשואת אג"ח, מק"מ וכו').
-
-מרווח (primeMargin): במסלולי פריים, לרוב הדוח כותב את המרווח במפורש בעמודה כמו "בסיס לקביעת הריבית ותוספת/הפחתה", בפורמט כמו "P - 0.50%" או "P + 0.20%" — יש לחלץ את המספר הזה (עם הסימן, למשל -0.5) לתוך primeMargin. אם המרווח לא כתוב במפורש, השאר primeMargin כ-null ומלא רק את currentRate.
-
-ריבית נומינלית מול מתואמת: currentRate הוא אחוז שנתי (מספר בלי %) — חובה להשתמש בריבית ה**נומינלית** בלבד. השדה מכונה בבנקים שונים בניסוחים שונים, למשל: "שיעור ריבית נומינלית ליום מכתבנו זה" (הפועלים), "שיעור הריבית בחלק זה" (מזרחי-טפחות), או פשוט "ריבית נומינלית". לעולם אל תשתמש בשדה המכונה "ריבית מתואמת"/"ריבית אפקטיבית"/"שיעור ריבית מתואמת" — גם אם הוא מופיע ממש ליד השדה הנכון ונראה דומה לו. לעיתים הדוח אף מציין זאת במפורש ("החישוב מבוצע במונחי ריבית נומינלית ולא מתואמת") — זהו אישור שאתה בכיוון הנכון.
-
-resetFrequencyYears: רק למסלולים משתנים. הדוחות מציינים זאת לרוב כ"תדירות שינוי הריבית בחודשים" (למשל 1, 12, או 60) — המר לשנים (חלק ב-12) ועגל לערך הקרוב מבין 1.5 או 5.
-
-סכומים ותקופות — יש לחלץ עבור כל מסלול את שני הזוגות הבאים בנפרד, ולא להתבלבל ביניהם:
-(1) remainingPrincipal + remainingMonths — המצב היום. remainingPrincipal הוא היתרה הנקייה, מכונה "קרן", "יתרת הקרן", או "קרן נותרת" — **לעולם לא** שדה כמו "יתרה לסילוק"/"יתרה לפירעון"/"סיכום ביניים"/"סכום הסילוק" (אלו כוללים גם ריבית שנצברה, הפרשי הצמדה על הריבית, ועמלות, וגבוהים מהקרן הנקייה; אם יש ספק, בחר את הסכום הנמוך יותר מבין השניים). accumulatedLinkagePaid מכונה "הצמדה שנצברה" או "הפרשי הצמדה על הקרן" (לא על הריבית).
-(2) originalAmount + originalMonths — המצב בתחילת המסלול, מכונה "סכום הלוואה מקורי", "קרן מקורית", או "סכום חלק זה בעת הביצוע".
-אם התקופות (remainingMonths / originalMonths) לא כתובות כמספר ישיר אלא כתאריכים (וזה המקרה הנפוץ), חשב אותן מהתאריכים: אתר בדוח שלושה תאריכים — (א) תאריך תחילת המסלול ("מועד ביצוע ההלוואה"/"תאריך הביצוע"), (ב) תאריך הסיום הצפוי ("מועד צפוי לתשלום אחרון"/"תאריך סילוק חלק זה"/"תאריך סיום ההלוואה"), (ג) תאריך המכתב/הדוח עצמו (בראש העמוד, לעיתים "מועד החישוב"). אז: remainingMonths = (ב) פחות (ג), בחודשים. originalMonths = (ב) פחות (א), בחודשים. שים גם את תאריך המכתב עצמו בשדה asOfDate (בפורמט YYYY-MM-DD אם אפשר).
-
-מסלולים כפולים/זהים (שני לווים): לעיתים אותו מסלול מופיע פעמיים ברצף עם מספרי הלוואה/מרכיב שונים אך תנאים זהים לחלוטין (ריבית, תאריכים, סוג) — זה כמעט תמיד מציין שני לווים על אותה הלוואה. במקרה כזה, מזג את הזוג למסלול אחד בודד: סכם את remainingPrincipal, originalAmount, ו-accumulatedLinkagePaid של שניהם יחד (שאר השדות זהים ממילא, אין צורך לשנותם). אל תחזיר את אותו מסלול פעמיים בנפרד.
-
-מבנה הדוח משתנה בין בנקים — לעיתים טבלה מרוכזת אחת ("יתרות לסילוקין"), ולעיתים בלוק פירוט נפרד לכל מסלול/"חלק" (כמו דוח "נתונים לסילוק" עם כותרת "מס' חלק" לכל מסלול). יש לזהות את המבנה הספציפי ולחלץ את אותם השדות הסמנטיים לפי הכללים שלעיל, ללא תלות בפריסה הוויזואלית המדויקת.`
-  });
-
-  try{
+  try {
     const res = await fetch(PROXY_URL, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:1800, messages:[{role:'user', content}] })
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ images: uploadedImages })
     });
+
+    if (!res.ok) {
+      throw new Error(`שרת החזיר סטטוס ${res.status}`);
+    }
+
     const data = await res.json();
-    if(data.error) throw new Error(data.error.message || 'שגיאה בשרת');
-    const text = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
-    const m = text.match(/\{[\s\S]*\}/);
-    if(!m) throw new Error('לא זיהינו מבנה תקין בדוח');
-    const parsed = JSON.parse(m[0]);
-    if(!Array.isArray(parsed.tracks) || !parsed.tracks.length) throw new Error('לא זיהינו מסלולים בדוח');
-
-    tracks = parsed.tracks.map(t=>{
-      const type = mapCategoryToType(t.typeCategory, !!t.isLinked, t.resetFrequencyYears);
-      const track = {
-        type, linked: !!t.isLinked,
-        remainingPrincipal: +t.remainingPrincipal||0,
-        remainingYears: t.remainingMonths? +(t.remainingMonths/12).toFixed(1) : 20,
-        accumulatedLinkage: +t.accumulatedLinkagePaid||0,
-        originalAmount: t.originalAmount!=null? +t.originalAmount : null,
-        originalTermYears: t.originalMonths!=null? +(t.originalMonths/12).toFixed(1) : null,
-        userFriendlyName: t.userFriendlyName || null,
-      };
-      if(type==='prime'){
-        track.primeMargin = t.primeMargin!=null ? +t.primeMargin : +(((+t.currentRate||primeRateToday) - primeRateToday).toFixed(2));
-      }
-      else { track.rate = +t.currentRate||5; }
-      return track;
-    });
-    propertyValue = parsed.propertyValueGuess!=null? +parsed.propertyValueGuess : null;
-    usedSimplePath = false;
-    statusEl.textContent = '✅ מצאנו את המשכנתא שלך!';
-    renderTrackMiniCards();
-    setTimeout(()=>goScreen(3), 500);
-  }catch(err){
-    const isNetworkFail = err.message==='Failed to fetch' || err.message.includes('NetworkError');
-    const friendly = isNetworkFail
-      ? 'לא הצלחנו להתחבר לשרת החילוץ — בדוק חיבור אינטרנט ונסה שוב. אם זה חוזר, יכול להיות שהפרוקסי לא פרוס נכון.'
-      : err.message;
-    statusEl.textContent = '⚠️ '+friendly+' — אפשר לנסות שוב או למלא את 4 השאלות למטה.';
-  }finally{
-    dropzone.classList.remove('busy'); document.getElementById('extractBtn').disabled=false;
-  }
-}
-
-/* ============================================================
-   TEMPORARY TEST MODE — manual multi-track entry
-   (Use this until the document scanner / OCR proxy is deployed.
-    Remove this whole block, plus its HTML/CSS counterparts, once
-    the OCR path is reliable and you no longer need it.)
-============================================================ */
-let testTracks = [];
-document.getElementById('testModeToggle').addEventListener('click', ()=>{
-  document.getElementById('testModeBody').classList.toggle('hidden');
-  if(!testTracks.length){ addTestTrack(); }
-});
-function addTestTrack(){
-  testTracks.push({category:'fixed', linked:false, resetFrequencyYears:5, remainingPrincipal:null, remainingYears:20, rate:5, primeMargin:-0.4, accumulatedLinkage:0, originalAmount:null, originalTermYears:null});
-  renderTestTracks();
-}
-function renderTestTracks(){
-  const host = document.getElementById('testTracksHost');
-  host.innerHTML = testTracks.map((t,i)=>`
-    <div class="test-track-card" data-i="${i}">
-      <div class="field"><label>סוג מסלול</label>
-        <select data-tt="category">
-          <option value="fixed" ${t.category==='fixed'?'selected':''}>ריבית קבועה</option>
-          <option value="prime" ${t.category==='prime'?'selected':''}>פריים</option>
-          <option value="variable" ${t.category==='variable'?'selected':''}>ריבית משתנה</option>
-        </select>
-      </div>
-      ${t.category!=='prime' ? `<div class="check-row"><input type="checkbox" id="tt_linked_${i}" data-tt="linked" ${t.linked?'checked':''}><label for="tt_linked_${i}">צמוד למדד</label></div>`:''}
-      ${t.category==='variable' ? `<div class="field"><label>כל כמה זמן מתעדכנת הריבית</label>
-        <select data-tt="resetFrequencyYears">
-          <option value="1.5" ${t.resetFrequencyYears===1.5?'selected':''}>כל שנה וחצי</option>
-          <option value="5" ${t.resetFrequencyYears===5?'selected':''}>כל 5 שנים</option>
-        </select></div>`:''}
-      <div class="trow">
-        <div class="field"><label>יתרת קרן (₪)</label><input type="text" inputmode="numeric" class="amt" data-tt="remainingPrincipal" value="${t.remainingPrincipal!=null?Number(t.remainingPrincipal).toLocaleString('en-US'):''}"></div>
-        <div class="field"><label>שנים שנותרו</label><input type="number" step="0.1" data-tt="remainingYears" value="${t.remainingYears??''}"></div>
-      </div>
-      <div class="trow">
-        ${t.category==='prime'
-          ? `<div class="field"><label>מרווח מהפריים (למשל -0.4)</label><input type="number" step="0.01" data-tt="primeMargin" value="${t.primeMargin??''}"></div>`
-          : `<div class="field"><label>ריבית שנתית %</label><input type="number" step="0.01" data-tt="rate" value="${t.rate??''}"></div>`}
-        ${t.linked? `<div class="field"><label>הצמדה שנצברה (₪)</label><input type="text" inputmode="numeric" class="amt" data-tt="accumulatedLinkage" value="${t.accumulatedLinkage!=null?Number(t.accumulatedLinkage).toLocaleString('en-US'):''}"></div>`:'<div></div>'}
-      </div>
-      <div class="trow">
-        <div class="field"><label>סכום מקורי (₪, לא חובה)</label><input type="text" inputmode="numeric" class="amt" data-tt="originalAmount" value="${t.originalAmount!=null?Number(t.originalAmount).toLocaleString('en-US'):''}"></div>
-        <div class="field"><label>תקופה מקורית בשנים (לא חובה)</label><input type="number" step="0.5" data-tt="originalTermYears" value="${t.originalTermYears??''}"></div>
-      </div>
-      <button type="button" class="btn link tt-del" style="padding:4px;">✕ הסר מסלול</button>
-    </div>`).join('');
-
-  host.querySelectorAll('[data-tt]').forEach(el=>{
-    const evt = el.tagName==='SELECT' ? 'change' : 'input';
-    el.addEventListener(evt, e=>{
-      const i = +e.target.closest('.test-track-card').dataset.i;
-      const f = e.target.dataset.tt;
-      if(f==='linked'){ testTracks[i].linked = e.target.checked; renderTestTracks(); return; }
-      if(f==='category'){ testTracks[i].category = e.target.value; renderTestTracks(); return; }
-      if(f==='resetFrequencyYears'){ testTracks[i].resetFrequencyYears = +e.target.value; return; }
-      if(e.target.classList.contains('amt')){
-        testTracks[i][f] = liveFormatAmount(e.target);
-      } else {
-        testTracks[i][f] = e.target.value===''? null : +e.target.value;
-      }
-    });
-  });
-  host.querySelectorAll('.tt-del').forEach(btn=>btn.addEventListener('click', e=>{
-    const i = +e.target.closest('.test-track-card').dataset.i;
-    testTracks.splice(i,1); renderTestTracks();
-  }));
-}
-document.getElementById('addTestTrackBtn').addEventListener('click', addTestTrack);
-document.getElementById('testSubmitBtn').addEventListener('click', ()=>{
-  const valid = testTracks.filter(t=>t.remainingPrincipal>0 && t.remainingYears>0);
-  if(!valid.length){ alert('נא למלא לפחות מסלול אחד עם יתרת קרן ותקופה'); return; }
-  tracks = valid.map(t=>{
-    const type = mapCategoryToType(t.category, !!t.linked, t.resetFrequencyYears);
-    const track = {
-      type, linked: !!t.linked,
-      remainingPrincipal: t.remainingPrincipal||0,
-      remainingYears: t.remainingYears||20,
-      accumulatedLinkage: t.accumulatedLinkage||0,
-      originalAmount: t.originalAmount||null,
-      originalTermYears: t.originalTermYears||null,
-      userFriendlyName: null,
-    };
-    if(type==='prime'){ track.primeMargin = t.primeMargin!=null? +t.primeMargin : -0.4; }
-    else { track.rate = t.rate!=null? +t.rate : 5; }
-    return track;
-  });
-  propertyValue = parseAmount(document.getElementById('tm_value').value) || null;
-  usedSimplePath = false;
-  renderTrackMiniCards();
-  goScreen(3);
-});
-
-/* ============================================================
-   SIMPLE 4-QUESTION PATH
-============================================================ */
-document.getElementById('simpleSubmitBtn').addEventListener('click', ()=>{
-  const payment = parseAmount(document.getElementById('s_payment').value);
-  const principal = parseAmount(document.getElementById('s_principal').value);
-  const value = parseAmount(document.getElementById('s_value').value);
-  if(!payment || !principal){ alert('נא למלא לפחות את ההחזר החודשי ויתרת החוב'); return; }
-
-  const rate = impliedRate(principal, payment, ASSUMED_SIMPLE_TERM_MONTHS) ?? 5;
-  tracks = [{
-    type:'fixed_unlinked', linked:false,
-    remainingPrincipal: principal,
-    remainingYears: ASSUMED_SIMPLE_TERM_MONTHS/12,
-    accumulatedLinkage:0, originalAmount:null, originalTermYears:null,
-    userFriendlyName:'המשכנתא שלך (הערכה כללית)', estimatedFromSimple:true,
-  }];
-  tracks[0].rate = rate;
-  propertyValue = value || null;
-  usedSimplePath = true;
-  renderTrackMiniCards();
-  goScreen(3);
-});
-
-/* ============================================================
-   TRACK MINI CARDS (screen 3, OCR confirm)
-============================================================ */
-function renderTrackMiniCards(){
-  const host = document.getElementById('trackMiniHost');
-  host.innerHTML = tracks.map(t=>{
-    const def = trackDef(t.type);
-    const name = t.userFriendlyName || def.label;
-    const rateTxt = t.type==='prime'
-      ? `${trackRate(t).toFixed(2)}% (פריים ${primeRateToday.toFixed(2)}% ${t.primeMargin>=0?'+':''}${(t.primeMargin||0).toFixed(2)})`
-      : trackRate(t).toFixed(2)+'%';
-    const origRow = t.originalAmount
-      ? `<div class="row"><span>סכום מקורי</span><strong>${Math.round(t.originalAmount).toLocaleString('he-IL')} ₪ ${t.originalTermYears?'('+t.originalTermYears+' שנים)':''}</strong></div>`
-      : '';
-    return `<div class="track-mini">
-      <div class="name">${name}</div>
-      <div class="row"><span>ריבית נוכחית</span><strong>${rateTxt}</strong></div>
-      ${origRow}
-      <div class="row"><span>יתרה לתשלום היום</span><strong>${Math.round(t.remainingPrincipal+(t.linked?t.accumulatedLinkage:0)).toLocaleString('he-IL')} ₪</strong></div>
-      <div class="row"><span>שנים שנשארו</span><strong>${t.remainingYears}</strong></div>
-    </div>`;
-  }).join('');
-}
-document.getElementById('confirmTracksBtn').addEventListener('click', runDiagnosis);
-
-/* ============================================================
-   PER-TRACK ECONOMICS
-============================================================ */
-function trackPrincipalBase(t){ return (+t.remainingPrincipal||0) + (t.linked?(+t.accumulatedLinkage||0):0); }
-function trackMonths(t){ return Math.round((+t.remainingYears||0)*12); }
-function trackRate(t){ if(t.type==='prime') return primeRateToday + (t.primeMargin!=null? +t.primeMargin : 0); return t.rate!=null? +t.rate : 5; }
-function trackFutureCost(t){
-  const principal = trackPrincipalBase(t);
-  const rate = trackRate(t);
-  const months = trackMonths(t);
-  const rows = buildSchedule(principal, rate, months);
-  const totals = totalsFromSchedule(rows);
-  const monthly = rows.length? rows[0].payment : 0;
-  return {monthly, totalPayments:totals.payments, totalInterest:totals.interest, rows};
-}
-function trackExitCost(t, defaultCompRate){
-  if(isExempt(t.type)) return {penalty: DEFAULT_OP_FEE, exempt:true};
-  const rate = trackRate(t);
-  const principal = trackPrincipalBase(t);
-  const months = trackMonths(t);
-  const rows = buildSchedule(principal, rate, months);
-  const capFee = capitalizationFee(rows, rate, defaultCompRate);
-  return {penalty: capFee+DEFAULT_OP_FEE, exempt:false};
-}
-function linkageRiskExtra(t){
-  if(!t.linked) return 0;
-  const years = (+t.remainingYears||0);
-  const base = trackPrincipalBase(t);
-  const infl = DEFAULT_INFLATION/100;
-  return base*(Math.pow(1+infl, years)-1);
-}
-function trackHistory(t){
-  if(!t.originalAmount || !t.originalTermYears) return null;
-  const rate = trackRate(t);
-  const originalMonths = Math.round(t.originalTermYears*12);
-  const remainingMonths = trackMonths(t);
-  const paymentsMade = Math.max(0, originalMonths-remainingMonths);
-  const rows = buildSchedule(t.originalAmount, rate, originalMonths);
-  const made = rows.slice(0, paymentsMade);
-  const totals = totalsFromSchedule(made);
-  return {principalPaid:totals.principal, interestPaid:totals.interest};
-}
-function rateTrack(t, ltv){
-  const rate = trackRate(t);
-  const marketRate = getMarketRate(t.type, ltv, t.remainingYears);
-  const diff = rate-marketRate;
-  const future = trackFutureCost(t);
-  const marketRows = buildSchedule(trackPrincipalBase(t), marketRate, trackMonths(t));
-  const marketMonthly = marketRows.length? marketRows[0].payment : 0;
-  const monthlySaving = future.monthly-marketMonthly;
-  const exit = trackExitCost(t, marketRate);
-  const breakevenMonths = (monthlySaving>0 && exit.penalty>0) ? exit.penalty/monthlySaving : (monthlySaving>0 && exit.penalty<=0 ? 0 : null);
-
-  let status='danger', reason='';
-  if(diff<0.15){ status='danger'; reason=`הריבית שלך (${rate.toFixed(2)}%) כבר קרובה או נמוכה ממה שיש היום בשוק (${marketRate.toFixed(2)}%) — אין צורך למחזר.`; }
-  else if(exit.exempt){ status='safe'; reason=`אין עמלת יציאה על המסלול הזה, והריבית שלך (${rate.toFixed(2)}%) גבוהה מהשוק (${marketRate.toFixed(2)}%) — כדאי לבדוק מחזור.`; }
-  else if(breakevenMonths!==null){
-    if(breakevenMonths<=24){ status='safe'; reason=`הריבית שלך (${rate.toFixed(2)}%) גבוהה מהשוק (${marketRate.toFixed(2)}%). עלות היציאה חוזרת אליך תוך פחות משנתיים — משתלם.`; }
-    else if(breakevenMonths<=48){ status='warn'; reason=`הריבית שלך גבוהה מהשוק. עלות היציאה חוזרת אליך תוך 2-4 שנים — כדאי לבדוק, אבל לא דחוף.`; }
-    else{ status='warn'; reason=`הריבית שלך (${rate.toFixed(2)}%) גבוהה מהשוק (${marketRate.toFixed(2)}%), אבל עלות היציאה מהמסלול גבוהה יחסית לחיסכון — לוקח כ-${Math.ceil(breakevenMonths)} חודשים להחזיר אותה. עדיין שווה לבדוק מול הבנק, זה לא מיידי.`; }
-  } else { status='warn'; reason='הריבית שלך גבוהה מהשוק — כדאי לבדוק מול הבנק לתשובה מדויקת.'; }
-
-  return {status, reason, rate, marketRate, future, monthlySaving, exit, breakevenMonths};
-}
-
-/* ============================================================
-   RUN DIAGNOSIS
-============================================================ */
-let ratings = [];
-let ltvGlobal = null;
-function runDiagnosis(){
-  ltvGlobal = propertyValue ? (tracks.reduce((s,t)=>s+trackPrincipalBase(t),0)/propertyValue*100) : null;
-  ratings = tracks.map(t=>rateTrack(t, ltvGlobal));
-  renderMoneyCounter();
-  renderDoNothing();
-  renderLinkage();
-  renderPerTrack();
-  renderScore();
-  goScreen(4);
-}
-
-function renderMoneyCounter(){
-  const card = document.getElementById('paidToDateCard');
-  const histories = tracks.map(t=>trackHistory(t));
-  const known = histories.some(h=>h);
-  if(!known){
-    card.classList.add('hidden');
-    document.getElementById('moneyCounterPaid').innerHTML='';
-    return;
-  }
-  card.classList.remove('hidden');
-  let principal=0, interest=0, linkage=0;
-  tracks.forEach((t,i)=>{ const h=histories[i]; if(h){ principal+=h.principalPaid; interest+=h.interestPaid; } linkage += t.linked? (+t.accumulatedLinkage||0):0; });
-  const total = principal+interest+linkage;
-  const pP=total? principal/total*100:0, pI=total? interest/total*100:0, pL=total? linkage/total*100:0;
-  document.getElementById('moneyCounterPaid').innerHTML = `
-    <div class="money-bar">
-      <div style="width:${pP}%;background:var(--accent);"></div>
-      <div style="width:${pI}%;background:var(--muted);"></div>
-      <div style="width:${pL}%;background:var(--warn);"></div>
-    </div>
-    <div class="money-legend">
-      <span><i style="background:var(--accent)"></i>קרן: ${Math.round(principal).toLocaleString('he-IL')} ₪</span>
-      <span><i style="background:var(--muted)"></i>ריבית: ${Math.round(interest).toLocaleString('he-IL')} ₪</span>
-      <span><i style="background:var(--warn)"></i>הצמדה: ${Math.round(linkage).toLocaleString('he-IL')} ₪</span>
-    </div>
-    <p class="small-note">סך הכל שילמת עד היום כ-${Math.round(total).toLocaleString('he-IL')} ₪.</p>
-  `;
-}
-
-function renderDoNothing(){
-  const totalMonthly = ratings.reduce((s,r)=>s+r.future.monthly,0);
-  const totalInterest = ratings.reduce((s,r)=>s+r.future.totalInterest,0);
-  const totalLinkage = tracks.reduce((s,t)=>s+(t.linked?linkageRiskExtra(t):0),0);
-  const maxYears = Math.max(...tracks.map(t=>+t.remainingYears||0));
-  document.getElementById('doNothingBox').innerHTML = `
-    <div class="stat-row">
-      <div class="stat-box"><div class="num">${Math.round(totalMonthly).toLocaleString('he-IL')} ₪</div><div class="lbl">החזר חודשי היום</div></div>
-      <div class="stat-box"><div class="num">${maxYears.toFixed(0)} שנים</div><div class="lbl">עד סוף המשכנתא</div></div>
-      <div class="stat-box"><div class="num">${Math.round(totalInterest).toLocaleString('he-IL')} ₪</div><div class="lbl">ריבית עתידית צפויה</div></div>
-      <div class="stat-box"><div class="num">${Math.round(totalLinkage).toLocaleString('he-IL')} ₪</div><div class="lbl">הצמדה עתידית צפויה*</div></div>
-    </div>
-    <p class="small-note" style="margin-top:10px;">*בהנחת אינפלציה ממוצעת של כ-2.5% לשנה — הנחת עבודה, לא תחזית.</p>
-  `;
-}
-
-function renderLinkage(){
-  const linked = tracks.filter(t=>t.linked);
-  const card = document.getElementById('linkageCard');
-  if(!linked.length){ card.classList.add('hidden'); return; }
-  card.classList.remove('hidden');
-  document.getElementById('linkageExplain').innerHTML = linked.map(t=>{
-    const extra = linkageRiskExtra(t);
-    const hist = trackHistory(t);
-    let earlyNote = '';
-    if(hist){
-      const totalPaid = hist.principalPaid+hist.interestPaid;
-      const principalShare = totalPaid? hist.principalPaid/totalPaid : null;
-      if(principalShare!=null && principalShare<0.25){
-        earlyNote = `<p style="margin-top:8px;"><strong>עוד סיבה לפעול עכשיו:</strong> עד היום כמעט כל מה ששילמת על המסלול הזה היה ריבית — רק כ-${Math.round(principalShare*100)}% ירד בפועל מהקרן. כלומר כמעט אין "התקדמות" שתפסיד אם תפסיק את ההצמדה עכשיו ותעבור למסלול לא צמוד. ככל שתמתין יותר, ההצמדה תמשיך להצטבר על יתרה גדולה יותר.</p>`;
-      }
-    }
-    return `<p>יש לך מסלול צמוד למדד עם ${Math.round(t.accumulatedLinkage||0).toLocaleString('he-IL')} ₪ הצמדה שכבר נצברה. אם תישאר צמוד עוד ${t.remainingYears} שנים, ההצמדה עלולה להוסיף עוד כ-${Math.round(extra).toLocaleString('he-IL')} ₪ לחוב שלך — זה בנוסף לריבית. אם תמיר למסלול לא צמוד, ההחזר יהיה קבוע וידוע מראש, בלי ההפתעה הזו.</p>${earlyNote}`;
-  }).join('');
-}
-
-function renderPerTrack(){
-  document.getElementById('perTrackDiag').innerHTML = tracks.map((t,i)=>{
-    const r = ratings[i];
-    const def = trackDef(t.type);
-    const name = t.userFriendlyName || def.label;
-    const dot = r.status==='safe'?'🟢':r.status==='warn'?'🟡':'🔴';
-    const forecastNote = forecasts[t.type] ? `<p style="font-size:12.5px;color:var(--muted);margin:8px 0 0;">💬 ${forecasts[t.type]}</p>` : '';
-
-    const principal = trackPrincipalBase(t);
-    const months = trackMonths(t);
-    const rate = trackRate(t);
-    const bands = buildSavingsTable(principal, months, rate);
-    let savingsTableHtml = '';
-    if(bands.length){
-      savingsTableHtml = `
-        <p style="font-size:12.5px;font-weight:700;margin:10px 0 4px;">כמה תצטרך לחסוך כדי לקבל ריבית חדשה כזו (עד סוף התקופה, ${months>0?Math.round(months/12):0} שנים):</p>
-        <table class="simple" style="font-size:12px;">
-          <thead><tr><th>חיסכון מצטבר</th><th>ריבית חדשה נדרשת</th></tr></thead>
-          <tbody>
-            ${bands.map(b=>`<tr><td>${Math.round(b.from).toLocaleString('he-IL')}–${Math.round(b.to).toLocaleString('he-IL')} ₪</td><td>עד כ-${b.rate.toFixed(2)}%</td></tr>`).join('')}
-          </tbody>
-        </table>`;
-    }
-
-    return `<div class="track-mini">
-      <div class="name">${dot} ${name}</div>
-      <p style="font-size:13.5px;margin:6px 0 0;">${r.reason}</p>
-      ${forecastNote}
-      ${savingsTableHtml}
-    </div>`;
-  }).join('');
-}
-
-/* ============================================================
-   SCORE (per PRD rule) + RECOMMENDATION + LEAD
-============================================================ */
-document.getElementById('toRecommendBtn').addEventListener('click', ()=>goScreen(5));
-
-function computeScore(){
-  const safeTracks = ratings.filter(r=>r.status==='safe');
-  const warnTracks = ratings.filter(r=>r.status==='warn');
-  const safeCount = safeTracks.length;
-  if(safeCount===0 && warnTracks.length===0) return 'GOOD';
-  const under24 = safeTracks.filter(r=>r.breakevenMonths!=null && r.breakevenMonths<24).length;
-  if(safeCount>=2 && under24>=2) return 'URGENT_CHECK';
-  return 'WORTH_CHECKING';
-}
-
-function renderScore(){
-  const score = computeScore();
-  const hero = document.getElementById('scoreHero');
-  const meta = {
-    GOOD:{emoji:'🟢', title:'המשכנתא שלך במצב טוב', txt:'לא זיהינו הזדמנות משמעותית למחזור כרגע.'},
-    WORTH_CHECKING:{emoji:'🟡', title:'שווה לבדוק מחזור', txt:'יש פוטנציאל לשיפור בחלק מהמשכנתא שלך.'},
-    URGENT_CHECK:{emoji:'🔴', title:'כדאי לבדוק בהקדם', txt:'זיהינו פערים משמעותיים מול מה שיש היום בשוק.'},
-  }[score];
-  hero.innerHTML = `<div class="emoji">${meta.emoji}</div><h2>${meta.title}</h2><p>${meta.txt}</p>`;
-  renderGoalRecommendation();
-}
-
-/* Recompute total monthly payment + total interest across all tracks under a scenario:
-   useMarketRate - swap rate to the admin market rate (only relevant tracks if onlyWorthIt)
-   deltaYears    - add/subtract this many years from each affected track's remaining term
-   onlyWorthIt   - apply only to tracks rated 'safe' or 'warn'; others stay exactly as-is */
-function computeScenario(useMarketRate, deltaYears, onlyWorthIt){
-  let monthly=0, interest=0;
-  tracks.forEach((t,i)=>{
-    const r = ratings[i];
-    const worth = r.status==='safe'||r.status==='warn';
-    if(onlyWorthIt && !worth){ monthly += r.future.monthly; interest += r.future.totalInterest; return; }
-    const rate = useMarketRate? r.marketRate : trackRate(t);
-    const years = Math.max(1, t.remainingYears + deltaYears);
-    const principal = trackPrincipalBase(t);
-    const rows = buildSchedule(principal, rate, Math.round(years*12));
-    const totals = totalsFromSchedule(rows);
-    monthly += rows.length? rows[0].payment : 0;
-    interest += totals.interest;
-  });
-  return {monthly, interest};
-}
-
-function renderGoalRecommendation(){
-  const worthIdx = tracks.map((t,i)=>i).filter(i=>ratings[i].status==='safe'||ratings[i].status==='warn');
-  const baseline = ratings.reduce((s,r)=>s+r.future.monthly,0);
-  const baselineInterest = ratings.reduce((s,r)=>s+r.future.totalInterest,0);
-  const titleEl = document.getElementById('goalCardTitle');
-  let html = '';
-
-  if(selectedGoal==='lower_payment'){
-    titleEl.textContent = 'איך להקטין את ההחזר החודשי';
-    if(worthIdx.length){
-      const rateOnly = computeScenario(true, 0, true);
-      html += `<div class="option-item"><strong>העדיפות — הורדת ריבית לפי טבלת השוק, באותה תקופה</strong>
-        ההחזר החודשי יורד מ-${Math.round(baseline).toLocaleString('he-IL')} ₪ ל-${Math.round(rateOnly.monthly).toLocaleString('he-IL')} ₪ — בלי לשלם יותר ריבית בסך הכל, כי התקופה לא משתנה.</div>`;
+    if (data.tracks && data.tracks.length > 0) {
+      tracks = data.tracks;
+      statusEl.textContent = '';
+      goScreen(3);
     } else {
-      html += `<div class="option-item">הריביות שלך כבר קרובות למה שיש בשוק, אז אין הרבה לשפר דרך החלפת ריבית בלבד.</div>`;
+      throw new Error("לא נמצאו מסלולים במסמך");
     }
-    const extended = computeScenario(false, 10, false);
-    html += `<div class="option-item"><strong>אפשרות נוספת — הארכת התקופה (פחות מומלץ)</strong>
-      אם תאריך את המשכנתא בכ-10 שנים באותה ריבית, ההחזר יכול לרדת ל-${Math.round(extended.monthly).toLocaleString('he-IL')} ₪ לחודש — אבל תשלם משמעותית יותר ריבית לאורך הדרך, כי הכסף "עובד" נגדך זמן רב יותר. עדיף כמוצא אחרון.</div>`;
-
-  } else if(selectedGoal==='save_money'){
-    titleEl.textContent = 'איך לחסוך הכי הרבה כסף';
-    if(worthIdx.length){
-      const save = computeScenario(true, -5, true);
-      const savedInterest = Math.max(0, baselineInterest-save.interest);
-      html += `<div class="option-item">לחיסכון מקסימלי: להוריד ריבית <strong>וגם</strong> לקצר תקופה במסלולים המשתלמים (כאן לדוגמה בכ-5 שנים). ההחזר החודשי עולה מ-${Math.round(baseline).toLocaleString('he-IL')} ₪ לכ-${Math.round(save.monthly).toLocaleString('he-IL')} ₪ — אבל סך הריבית שתשלם לאורך חיי ההלוואה יורד בכ-${Math.round(savedInterest).toLocaleString('he-IL')} ₪.</div>`;
-    } else {
-      html += `<div class="option-item">הריביות שלך כבר קרובות לשוק, כך שאין כרגע הזדמנות משמעותית לחסוך דרך מחזור.</div>`;
-    }
-
-  } else if(selectedGoal==='finish_faster'){
-    titleEl.textContent = 'לסיים מהר יותר';
-    const targetYears = +document.getElementById('s_shortenYears').value || 5;
-    const justShorten = computeScenario(false, -targetYears, false);
-    const savedJust = Math.max(0, baselineInterest-justShorten.interest);
-    html += `<div class="option-item">אם תקצר ב-${targetYears} שנים באותה ריבית: ההחזר החודשי עולה מ-${Math.round(baseline).toLocaleString('he-IL')} ₪ לכ-${Math.round(justShorten.monthly).toLocaleString('he-IL')} ₪, ותחסוך כ-${Math.round(savedJust).toLocaleString('he-IL')} ₪ בריבית לאורך הדרך.</div>`;
-    if(worthIdx.length){
-      const combo = computeScenario(true, -targetYears, true);
-      html += `<div class="option-item"><strong>שילוב חכם</strong> — אם באותה הזדמנות תוריד גם ריבית במסלולים המשתלמים, תגיע לאותו קיצור של ${targetYears} שנים בהחזר של כ-${Math.round(combo.monthly).toLocaleString('he-IL')} ₪ בלבד, במקום ${Math.round(justShorten.monthly).toLocaleString('he-IL')} ₪.</div>`;
-    }
-
-  } else { // just_check
-    titleEl.textContent = 'המצב שלך היום, לפי הריביות שבמערכת';
-    html += `<div class="option-item">מתוך ${tracks.length} מסלולים: <strong>${worthIdx.length}</strong> מהם רחוקים מספיק מהריבית של היום כדי שכדאי לבדוק מחזור, ו-<strong>${tracks.length-worthIdx.length}</strong> נמצאים במקום סביר מול השוק. ההחזר החודשי הכולל שלך היום: ${Math.round(baseline).toLocaleString('he-IL')} ₪. אין כאן המלצה לפעולה — רק תמונת מצב, בדיוק כמו שביקשת.</div>`;
+  } catch (err) {
+    console.error(err);
+    statusEl.innerHTML = 'לא הצלחנו להתחבר לשרת החילוץ — בדוק חיבור אינטרנט ונסה שוב. אם זה חוזר, יכול להיות שהפרוקסי לא פרוס נכון. — אפשר לנסות שוב או למלא את 4 השאלות למטה.';
+  } finally {
+    extractBtn.disabled = false;
   }
-
-  document.getElementById('optionsList').innerHTML = html;
-  document.getElementById('actionReasoning').textContent = '';
-}
-
-document.getElementById('leadBtn').addEventListener('click', ()=>{
-  const name = document.getElementById('lead_name').value.trim();
-  const phone = document.getElementById('lead_phone').value.trim();
-  const score = computeScore();
-  const msg = `שלום, ביצעתי בדיקת משכנתא באתר.\nשם: ${name||'-'}\nטלפון: ${phone||'-'}\nתוצאה: ${score}\nאשמח לבדיקת מחזור מלאה.`;
-  const url = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(msg)}`;
-  window.open(url, '_blank');
 });
+
+renderProgress();
 </script>
 </body>
 </html>
