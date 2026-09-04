@@ -109,6 +109,7 @@ p{color:#111111;}
 .check-row input{width:auto;}
 .hidden{display:none !important;}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
 
@@ -559,7 +560,7 @@ dropzone.addEventListener('dragover', e=>e.preventDefault());
 dropzone.addEventListener('drop', e=>{ e.preventDefault(); handleFiles(e.dataTransfer.files); });
 fileInput.addEventListener('change', e=>handleFiles(e.target.files));
 
-function compressImage(file, maxDim=1600, quality=0.82){
+function compressImage(file, maxDim=1300, quality=0.75){
   return new Promise((resolve, reject)=>{
     const img = new Image();
     const reader = new FileReader();
@@ -574,7 +575,7 @@ function compressImage(file, maxDim=1600, quality=0.82){
         canvas.width=width; canvas.height=height;
         canvas.getContext('2d').drawImage(img, 0, 0, width, height);
         const dataUrl = canvas.toDataURL('image/jpeg', quality);
-        resolve({dataUrl, base64: dataUrl.split(',')[1], mime:'image/jpeg'});
+        resolve([{dataUrl, base64: dataUrl.split(',')[1], mime:'image/jpeg'}]);
       };
       img.onerror = ()=>reject(new Error('לא ניתן לקרוא את התמונה'));
       img.src = reader.result;
@@ -583,35 +584,48 @@ function compressImage(file, maxDim=1600, quality=0.82){
     reader.readAsDataURL(file);
   });
 }
-function readFileAsBase64(file){
-  return new Promise((resolve, reject)=>{
-    const reader = new FileReader();
-    reader.onload = ()=> resolve({dataUrl:reader.result, base64:reader.result.split(',')[1], mime:file.type||'application/pdf', isPdf:true});
-    reader.onerror = ()=> reject(new Error('לא ניתן לקרוא את הקובץ'));
-    reader.readAsDataURL(file);
-  });
+
+const MAX_PAGES_PER_PDF = 4;
+async function pdfToImages(file, maxDim=1300, quality=0.75){
+  if(typeof pdfjsLib === 'undefined'){
+    throw new Error('ספריית קריאת ה-PDF לא נטענה — בדוק חיבור אינטרנט ונסה שוב.');
+  }
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  const numPages = Math.min(pdf.numPages, MAX_PAGES_PER_PDF);
+  const images = [];
+  for(let i=1; i<=numPages; i++){
+    const page = await pdf.getPage(i);
+    const baseViewport = page.getViewport({scale:1});
+    const scale = Math.min(2.5, maxDim/Math.max(baseViewport.width, baseViewport.height));
+    const viewport = page.getViewport({scale: Math.max(scale, 0.5)});
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+    await page.render({canvasContext: canvas.getContext('2d'), viewport}).promise;
+    const dataUrl = canvas.toDataURL('image/jpeg', quality);
+    images.push({dataUrl, base64: dataUrl.split(',')[1], mime:'image/jpeg'});
+  }
+  return images;
 }
+
+const MAX_TOTAL_IMAGES = 6;
 function handleFiles(files){
-  uploadedImages=[]; const arr=Array.from(files).slice(0,3); let loaded=0;
+  uploadedImages=[]; const arr=Array.from(files).slice(0,3);
   const thumbRow=document.getElementById('thumbRow'); thumbRow.innerHTML='';
   const statusEl = document.getElementById('extractStatus');
   statusEl.textContent = arr.length? '⏳ מכין את הקבצים...' : '';
   const isPdfFile = f => f.type==='application/pdf' || /\.pdf$/i.test(f.name||'');
-  const jobs = arr.map(f => isPdfFile(f) ? readFileAsBase64(f) : compressImage(f));
-  Promise.all(jobs).then(results=>{
-    results.forEach(r=>{
-      uploadedImages.push({base64:r.base64, mime:r.mime, isPdf:!!r.isPdf});
-      if(r.isPdf){
-        const badge=document.createElement('div');
-        badge.textContent='📄 PDF';
-        badge.style.cssText='width:70px;height:70px;display:flex;align-items:center;justify-content:center;border-radius:8px;border:1px solid var(--line);background:#fff;font-size:12px;';
-        thumbRow.appendChild(badge);
-      } else {
-        const img=document.createElement('img'); img.src=r.dataUrl; thumbRow.appendChild(img);
-      }
+  const jobs = arr.map(f => isPdfFile(f) ? pdfToImages(f) : compressImage(f));
+  Promise.all(jobs).then(resultsArrays=>{
+    const all = resultsArrays.flat().slice(0, MAX_TOTAL_IMAGES);
+    if(!all.length){ statusEl.textContent = '⚠️ לא נמצא תוכן בקובץ שהועלה.'; return; }
+    all.forEach(r=>{
+      uploadedImages.push({base64:r.base64, mime:r.mime});
+      const img=document.createElement('img'); img.src=r.dataUrl; thumbRow.appendChild(img);
     });
     statusEl.textContent = '';
-    document.getElementById('extractBtn').disabled=false;
+    document.getElementById('extractBtn').disabled = false;
   }).catch(err=>{
     statusEl.textContent = '⚠️ '+err.message;
   });
@@ -623,9 +637,7 @@ async function extractFromImages(){
   dropzone.classList.add('busy'); statusEl.textContent='⏳ קורא את הדוח שלך...';
   document.getElementById('extractBtn').disabled=true;
 
-  const content = uploadedImages.map(im=> im.isPdf
-    ? {type:'document', source:{type:'base64', media_type:'application/pdf', data:im.base64}}
-    : {type:'image', source:{type:'base64', media_type:im.mime||'image/jpeg', data:im.base64}});
+  const content = uploadedImages.map(im=>({type:'image', source:{type:'base64', media_type:im.mime||'image/jpeg', data:im.base64}}));
   content.push({type:'text', text:
 `זהו דוח יתרות/פרטי משכנתא מבנק ישראלי. חלץ את כל מסלולי ההלוואה הקיימים והחזר אך ורק JSON תקני (ללא טקסט נוסף, ללא Markdown) במבנה:
 {"propertyValueGuess": number|null,
@@ -665,7 +677,7 @@ resetFrequencyYears: רק למסלולים משתנים. הדוחות מציינ
   try{
     const res = await fetch(PROXY_URL, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ model:'claude-sonnet-5', max_tokens:1800, messages:[{role:'user', content}] })
+      body: JSON.stringify({ model:'claude-haiku-4-5-20251001', max_tokens:1500, messages:[{role:'user', content}] })
     });
     const data = await res.json();
     if(data.error) throw new Error(data.error.message || 'שגיאה בשרת');
